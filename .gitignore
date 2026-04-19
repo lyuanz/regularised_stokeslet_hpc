@@ -1,0 +1,5 @@
+*.h5
+*.parquet
+*.npz
+sim_log.txt
+*.txt
