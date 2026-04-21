@@ -6,7 +6,7 @@ if __name__ == "__main__":
     print("Loading input data...")
     all_parameters = np.loadtxt('all_parameters.txt')
     coeff_time = np.loadtxt('coeff_time.txt')
-    window_map = np.loadtxt('TImeWindow.txt')
+    window_map = np.loadtxt('TimeWindow.txt')
     
     # 1. GENERATE THE SPATIAL GRID (as before)
     x_vals = np.linspace(-10, 10, 200)

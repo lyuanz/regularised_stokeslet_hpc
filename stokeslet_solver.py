@@ -294,3 +294,62 @@ def compute_flow_field_grid(target_grid,
             )
                 
     return velocity_grid
+    
+@njit(parallel=True)
+def compute_flow_field_over_time(target_grid, 
+                                 all_parameters, 
+                                 time_array, 
+                                 coeff_time, 
+                                 window_map, 
+                                 dt=5e-3,
+                                 nu=168, 
+                                 rho=1/168):
+    """
+    Evaluates the total flow field across an entire grid over multiple time steps.
+
+    Parameters
+    ----------
+    target_grid -> np.ndarray : A 3D array of shape (Nx, Ny, 2) representing the coordinates
+                                of each point in the 2D space.
+    all_parameters -> np.ndarray : a 2D array recording the origin, radius, force, and PCA mode of each regularised Stokeslet
+    time_array -> np.ndarray : all the timepoints where the flow field is evaluated
+    coeff_time -> np.ndarray : Scalar multipliers for force over one flagellar beat period
+    window_map -> np.ndarray : time window beyond which the convolution integral will be truncated
+    dt -> float : timestep
+    nu -> int : kinematic viscosity
+    rho -> float : density
+
+    Returns
+    -------
+    np.ndarray : Fluid flow velocity at all grid points due to all the Stokeslets of a sperm cell at all timepoints.
+    """
+    Nt = len(time_array)
+    Nx, Ny, _ = target_grid.shape
+    
+    # Initialize the gigantic array! 
+    # Shape: (Number of time points, X points, Y points, 2 velocity components)
+    velocity_grids = np.zeros((Nt, Nx, Ny, 2))
+    
+    # prange distributes the time steps across your CPU cores
+    for t_idx in prange(Nt):
+        current_t = time_array[t_idx]
+        
+        # Standard sequential loops for the spatial grid
+        for i in range(Nx):
+            for j in range(Ny):
+                    
+                target_pos = target_grid[i, j]
+                
+                # Compute the field and store it in the 4D array
+                velocity_grids[t_idx, i, j] = compute_total_velocity(
+                    target_pos=target_pos,
+                    all_parameters=all_parameters, 
+                    current_t=current_t,  
+                    coeff_time=coeff_time,
+                    window_map=window_map, 
+                    dt=dt,
+                    nu=nu,
+                    rho=rho
+                )
+                
+    return velocity_grids
