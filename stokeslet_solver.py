@@ -353,3 +353,179 @@ def compute_flow_field_over_time(target_grid,
                 )
                 
     return velocity_grids
+    
+# Here onwards is for steady regularised Stokeslets
+@njit
+def steady_gaussian_stokeslet(dx, dy, 
+                              fx, fy,
+                              coef,
+                              eps_g,
+                              mu=1
+                             ):
+    """
+    Computes the steady flow field u, v induced by a regularized Stokeslet 
+    with a Gaussian blob at a distance vector (dx, dy).
+
+    Parameters
+    ----------
+    dx, dy -> floats : displacement vector from regularised Stokeslet to point of interest.
+    fx, fy -> floats : force vector of the regularised Stokeslet
+    coef -> float : time-dependent coefficient 
+    eps_g -> float : radius of regularised Stokeslet
+    mu -> float : dynamics viscosity, non-dimensionalised to 1
+
+    Returns
+    u, v : fluid velocity at the point of interest
+    """
+    r2 = dx**2 + dy**2
+    r = math.sqrt(r2)
+    
+    # Numerical guard: Prevent division by zero if evaluating exactly AT the Stokeslet
+    if r < 1e-12:
+        multiplier = 1 / (3 * math.pi * math.sqrt(2*math.pi) * mu * eps_g)
+        return coef * multiplier * fx, coef * multiplier * fy
+        
+    # Pre-compute repeated variables to save CPU cycles
+    sqrt_2_eps = math.sqrt(2.0) * eps_g
+    R = r / sqrt_2_eps
+    
+    erf_R = math.erf(R)
+    exp_R2 = math.exp(-R**2)
+    
+    # --- Compute Bracket A (The delta_ij term) ---
+    A_part1 = erf_R
+    A_part2 = exp_R2 / (math.sqrt(math.pi) * R)
+    A_part3 = (eps_g / r)**2 * erf_R
+    A = A_part1 - A_part2 + A_part3
+    
+    # --- Compute Bracket B (The x_i x_j / r^2 term) ---
+    B_part1 = erf_R
+    B_part2 = 3 * exp_R2 / (math.sqrt(math.pi) * R)
+    B_part3 = 3.0 * (eps_g / r)**2 * erf_R
+    B = B_part1 + B_part2 - B_part3
+    
+    # --- Combine into final velocity vectors ---
+    # Leading multiplier
+    multiplier = 1.0 / (8.0 * math.pi * mu * r)
+    
+    # The dot product of Force and Distance (f_j x_j)
+    f_dot_r = fx * dx + fy * dy
+    
+    # Final u_i calculations
+    u = coef * multiplier * (A * fx + B * f_dot_r * dx / r2)
+    v = coef * multiplier * (A * fy + B * f_dot_r * dy / r2)
+    
+    return u, v
+    
+# ---------------------------------------------------------
+# NEW: MULTI-STOKESLET SUPERPOSITION
+# ---------------------------------------------------------
+@njit
+def compute_total_velocity_steady(target_pos, 
+                           all_parameters, 
+                           current_t,  
+                           coeff_time, 
+                           mu=1
+                          ) -> np.ndarray:
+    """
+    Calculates the combined flow field from all regularised Stokeslets of the same cell 
+    using the principle of linear superposition.
+
+    Parameters
+    ----------
+    target_pos -> np.ndarray : (x, y) coordinates of the target position
+    all_parameters -> np.ndarray : a 2D array recording the origin, radius, force, and PCA mode of each regularised Stokeslet
+    current_t -> float : current timepoint
+    coeff_time -> np.ndarray : a 2D array recording the time-dependent coefficients of each regularised Stokeslet
+    mu -> 1 : dynamics viscosity
+
+    Returns
+    -------
+    total_u, total_v -> floats : Fluid flow velocity at the position of interest due to all the Stokeslets of a sperm cell
+    """
+    total_u = 0.0
+    total_v = 0.0
+    num_stokeslets = all_parameters.shape[0]
+    stokeslet_positions = all_parameters[:, :2]
+    epsilons = all_parameters[:, -2]
+    
+    time_index = int(round((current_t % 1.0) / 5e-3))
+    # Failsafe for floating point rounding pushing index out of bounds
+    if time_index >= coeff_time.shape[0]:
+        time_index = 0
+    
+    for j in range(num_stokeslets):
+        # Scale the universal base force by this specific Stokeslet's coefficient
+        fx, fy = all_parameters[j, 2:4]
+        PCA_mode = int(all_parameters[j, -1])
+        dx = target_pos[0] - stokeslet_positions[j, 0]
+        dy = target_pos[1] - stokeslet_positions[j, 1]
+        current_coef = coeff_time[time_index, PCA_mode]
+        
+        # Calculate the individual contribution
+        u_j, v_j = steady_gaussian_stokeslet(
+            dx, dy,  
+            fx, fy,  
+            current_coef, # Pass the extracted coefficient
+            eps_g=epsilons[j],
+            mu=mu
+        )
+        
+        # Superimpose (vector addition)
+        total_u += u_j
+        total_v += v_j
+        
+    return total_u, total_v
+    
+@njit(parallel=True)
+def compute_flow_field_over_time_steady(target_grid, 
+                                 all_parameters, 
+                                 time_array, 
+                                 coeff_time, 
+                                 mu=1):
+    """
+    Evaluates the total flow field across an entire grid over multiple time steps.
+
+    Parameters
+    ----------
+    target_grid -> np.ndarray : A 3D array of shape (Nx, Ny, 2) representing the coordinates
+                                of each point in the 2D space.
+    all_parameters -> np.ndarray : a 2D array recording the origin, radius, force, and PCA mode of each regularised Stokeslet
+    time_array -> np.ndarray : all the timepoints where the flow field is evaluated
+    coeff_time -> np.ndarray : Scalar multipliers for force over one flagellar beat period
+    mu -> float : dynamics viscosity
+
+    Returns
+    -------
+    np.ndarray : Fluid flow velocity at all grid points due to all the Stokeslets of a sperm cell at all timepoints.
+    """
+    Nt = len(time_array)
+    Nx, Ny, _ = target_grid.shape
+    
+    # Initialize the gigantic array! 
+    # Shape: (Number of time points, X points, Y points, 2 velocity components)
+    velocity_grids = np.zeros((Nt, Nx, Ny, 2))
+    
+    # prange distributes the time steps across your CPU cores
+    for t_idx in prange(Nt):
+        current_t = time_array[t_idx]
+        
+        # Standard sequential loops for the spatial grid
+        for i in range(Nx):
+            for j in range(Ny):
+                    
+                target_pos = target_grid[i, j]
+                
+                # Compute the field and store it in the 4D array
+                u, v = compute_total_velocity_steady(
+                    target_pos=target_pos,
+                    all_parameters=all_parameters, 
+                    current_t=current_t,  
+                    coeff_time=coeff_time,
+                    mu=mu
+                )
+
+                velocity_grids[t_idx, i, j, 0] = u
+                velocity_grids[t_idx, i, j, 1] = v
+                
+    return velocity_grids

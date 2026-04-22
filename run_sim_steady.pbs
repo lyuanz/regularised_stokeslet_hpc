@@ -1,0 +1,22 @@
+#!/bin/bash
+#PBS -N single_sperm_regularised_stokeslet_steady
+#PBS -P 11004323
+#PBS -q normal
+#PBS -l select=1:ncpus=64:mem=64gb
+#PBS -l walltime=02:00:00
+#PBS -j oe
+#PBS -o single_sperm_regularised_stokeslet_steady_log.txt
+
+# 1. Teleport to the folder where you submitted the job
+cd $PBS_O_WORKDIR
+
+# 2. Load the module and activate your environment
+module load miniforge3
+source activate dipole_env
+
+# 3. Tell Numba exactly how many cores to use
+# This should always match the 'ncpus' requested in the select line above!
+export NUMBA_NUM_THREADS=64
+
+# 4. Run the calculation
+python run_sim_steady.py
