@@ -134,43 +134,78 @@ def compute_flow_velocity(target_pos,
     
     window = get_time_window(r, window_map)
         
-    # Calculate the physical start time
     t_start = max(0.0, current_t - window)
     
-    # Convert absolute times into global integer indices
-    # (round() protects against floating-point precision errors like 1.999999 / 0.1)
     idx_start = int(round(t_start / dt))
     idx_end = int(round(current_t / dt))
         
     N_period = len(multiplier_array)
-    integral_sum = np.zeros(2, dtype=float)
+    integral_sum = np.zeros(2, dtype=np.float64)
     
-    # Traverse exact indices in the integration window
-    for i in range(idx_start, idx_end):
-        # Physical absolute times for Stokeslet evaluation
+    # Define the "Danger Zone": The most recent 5 time steps where the kernel is sharpest
+    danger_zone_steps = 5
+    idx_danger = max(idx_start, idx_end - danger_zone_steps)
+    
+    # ---------------------------------------------------------
+    # PART 1: BULK INTEGRATION (Standard Trapezoidal Rule)
+    # ---------------------------------------------------------
+    for i in range(idx_start, idx_danger):
         tau1 = i * dt
         tau2 = (i + 1) * dt
         
-        # Wrapped indices for the single-period multiplier array
         wrap_idx1 = i % N_period
         wrap_idx2 = (i + 1) % N_period
         
-        # Evaluate at tau1
         dt1 = current_t - tau1
         R1 = calc_stokeslet_tensor(r_vec, epsilon, dt1, nu)
         F1 = base_force * multiplier_array[wrap_idx1]
         integrand1 = R1 @ F1
         
-        # Evaluate at tau2
         dt2 = current_t - tau2
         R2 = calc_stokeslet_tensor(r_vec, epsilon, dt2, nu)
         F2 = base_force * multiplier_array[wrap_idx2]
         integrand2 = R2 @ F2
         
-        # Add to sum (Trapezoidal rule with constant dt)
         integral_sum += 0.5 * (integrand1 + integrand2) * dt
+
+    # ---------------------------------------------------------
+    # PART 2: DANGER ZONE (Sub-stepped Trapezoidal Rule)
+    # ---------------------------------------------------------
+    micro_steps = 20
+    dt_micro = dt / micro_steps
+    
+    for i in range(idx_danger, idx_end):
+        tau_base = i * dt
         
-    prefactor = 1.0 / (4 * math.pi * rho)
+        # Get the forces at the main interval bounds
+        wrap_idx1 = i % N_period
+        wrap_idx2 = (i + 1) % N_period
+        F_start = base_force * multiplier_array[wrap_idx1]
+        F_end = base_force * multiplier_array[wrap_idx2]
+        
+        # Traverse the micro-intervals
+        for j in range(micro_steps):
+            tau_m1 = tau_base + j * dt_micro
+            tau_m2 = tau_base + (j + 1) * dt_micro
+            
+            # Linearly interpolate the force for these specific micro-times
+            w1 = j / micro_steps
+            w2 = (j + 1) / micro_steps
+            F_m1 = F_start * (1.0 - w1) + F_end * w1
+            F_m2 = F_start * (1.0 - w2) + F_end * w2
+            
+            dt_m1 = current_t - tau_m1
+            dt_m2 = current_t - tau_m2
+            
+            R1 = calc_stokeslet_tensor(r_vec, epsilon, dt_m1, nu)
+            R2 = calc_stokeslet_tensor(r_vec, epsilon, dt_m2, nu)
+            
+            integrand1 = R1 @ F_m1
+            integrand2 = R2 @ F_m2
+            
+            integral_sum += 0.5 * (integrand1 + integrand2) * dt_micro
+            
+    prefactor = 1.0 / (4.0 * math.pi * rho)
     return prefactor * integral_sum
     
 # ---------------------------------------------------------
