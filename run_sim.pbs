@@ -1,22 +1,26 @@
 #!/bin/bash
-#PBS -N single_sperm_regularised_stokeslet
-#PBS -P 11004323
-#PBS -q normal
-#PBS -l select=1:ncpus=64:mem=64gb
+#PBS -N jax_single_sperm_sim
+#PBS -P personal-e0028670
+#PBS -q gdev
+#PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
 #PBS -l walltime=02:00:00
 #PBS -j oe
-#PBS -o single_sperm_regularised_stokeslet_log.txt
+#PBS -o jax_single_sperm_log.txt
 
 # 1. Teleport to the folder where you submitted the job
 cd $PBS_O_WORKDIR
 
-# 2. Load the module and activate your environment
+# 2. Load the modules and activate your environment
+# NOTE: Depending on your specific HPC, you may also need to load a CUDA module here!
+# e.g., module load cuda/11.8
 module load miniforge3
+module load cuda/11.8.0
 source activate dipole_env
 
-# 3. Tell Numba exactly how many cores to use
-# This should always match the 'ncpus' requested in the select line above!
-export NUMBA_NUM_THREADS=64
+# 3. JAX specific environment variables
+# This prevents JAX from instantly reserving 100% of the GPU VRAM, 
+# which is good etiquette on shared HPC systems and prevents memory crashes.
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 # 4. Run the calculation
 python run_sim.py

@@ -133,16 +133,16 @@ def compute_flow_velocity(target_pos,
     r = np.linalg.norm(r_vec)
     
     window = get_time_window(r, window_map)
-        
     t_start = max(0.0, current_t - window)
     
     idx_start = int(round(t_start / dt))
     idx_end = int(round(current_t / dt))
         
     N_period = len(multiplier_array)
+    T_period = N_period * dt
     integral_sum = np.zeros(2, dtype=np.float64)
     
-    # Define the "Danger Zone": The most recent 5 time steps where the kernel is sharpest
+    # 5 steps is a safe danger zone, but you can dynamically scale this later if needed
     danger_zone_steps = 5
     idx_danger = max(idx_start, idx_end - danger_zone_steps)
     
@@ -169,41 +169,47 @@ def compute_flow_velocity(target_pos,
         integral_sum += 0.5 * (integrand1 + integrand2) * dt
 
     # ---------------------------------------------------------
-    # PART 2: DANGER ZONE (Sub-stepped Trapezoidal Rule)
+    # PART 2: DANGER ZONE (Cubic Clustered Integration)
     # ---------------------------------------------------------
-    micro_steps = 20
-    dt_micro = dt / micro_steps
+    # Calculate the exact time gap remaining for the danger zone
+    tau_danger = idx_danger * dt
+    S_max = current_t - tau_danger
     
-    for i in range(idx_danger, idx_end):
-        tau_base = i * dt
+    if S_max > 0:
+        N_micro = 50  # Number of clustered points
         
-        # Get the forces at the main interval bounds
-        wrap_idx1 = i % N_period
-        wrap_idx2 = (i + 1) % N_period
-        F_start = base_force * multiplier_array[wrap_idx1]
-        F_end = base_force * multiplier_array[wrap_idx2]
-        
-        # Traverse the micro-intervals
-        for j in range(micro_steps):
-            tau_m1 = tau_base + j * dt_micro
-            tau_m2 = tau_base + (j + 1) * dt_micro
+        # We integrate over s (age of the force), where s = current_t - tau
+        for j in range(N_micro):
+            # CUBIC clustering packs points heavily near s=0
+            s_1 = S_max * (j / N_micro)**3
+            s_2 = S_max * ((j + 1) / N_micro)**3
+            ds = s_2 - s_1
             
-            # Linearly interpolate the force for these specific micro-times
-            w1 = j / micro_steps
-            w2 = (j + 1) / micro_steps
-            F_m1 = F_start * (1.0 - w1) + F_end * w1
-            F_m2 = F_start * (1.0 - w2) + F_end * w2
+            tau1 = current_t - s_1
+            tau2 = current_t - s_2
             
-            dt_m1 = current_t - tau_m1
-            dt_m2 = current_t - tau_m2
+            # --- Continuous Interpolation for F1 at tau1 ---
+            idx_float1 = (tau1 % T_period) / dt
+            idx_low1 = int(idx_float1)
+            idx_high1 = (idx_low1 + 1) % N_period
+            w1 = idx_float1 - int(idx_float1)
+            F1 = base_force * (multiplier_array[idx_low1] * (1.0 - w1) + multiplier_array[idx_high1] * w1)
             
-            R1 = calc_stokeslet_tensor(r_vec, epsilon, dt_m1, nu)
-            R2 = calc_stokeslet_tensor(r_vec, epsilon, dt_m2, nu)
+            # --- Continuous Interpolation for F2 at tau2 ---
+            idx_float2 = (tau2 % T_period) / dt
+            idx_low2 = int(idx_float2)
+            idx_high2 = (idx_low2 + 1) % N_period
+            w2 = idx_float2 - int(idx_float2)
+            F2 = base_force * (multiplier_array[idx_low2] * (1.0 - w2) + multiplier_array[idx_high2] * w2)
             
-            integrand1 = R1 @ F_m1
-            integrand2 = R2 @ F_m2
+            # Evaluate the tensors
+            R1 = calc_stokeslet_tensor(r_vec, epsilon, s_1, nu)
+            R2 = calc_stokeslet_tensor(r_vec, epsilon, s_2, nu)
             
-            integral_sum += 0.5 * (integrand1 + integrand2) * dt_micro
+            integrand1 = R1 @ F1
+            integrand2 = R2 @ F2
+            
+            integral_sum += 0.5 * (integrand1 + integrand2) * ds
             
     prefactor = 1.0 / (4.0 * math.pi * rho)
     return prefactor * integral_sum
