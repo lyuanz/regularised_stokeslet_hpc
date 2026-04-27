@@ -1,26 +1,31 @@
 #!/bin/bash
-#PBS -N jax_single_sperm_sim
-#PBS -P personal-e0028670
-#PBS -q gdev
-#PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
-#PBS -l walltime=02:00:00
+#PBS -N jax_4_chunk_sim
+#PBS -P 11004323
+#PBS -q normal
+# Requesting 4 GPUs ensures you are routed to the g3 queue
+#PBS -l select=1:ncpus=32:ngpus=4:mem=256gb
+#PBS -l walltime=08:00:00
 #PBS -j oe
-#PBS -o jax_single_sperm_log.txt
+#PBS -o jax_4_chunk_log.txt
 
-# 1. Teleport to the folder where you submitted the job
 cd $PBS_O_WORKDIR
 
-# 2. Load the modules and activate your environment
-# NOTE: Depending on your specific HPC, you may also need to load a CUDA module here!
-# e.g., module load cuda/11.8
 module load miniforge3
 module load cuda/11.8.0
 source activate dipole_env
 
-# 3. JAX specific environment variables
-# This prevents JAX from instantly reserving 100% of the GPU VRAM, 
-# which is good etiquette on shared HPC systems and prevents memory crashes.
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
-# 4. Run the calculation
-python run_sim.py
+echo "Dispatching 4 chunks to 4 separate GPUs..."
+
+# Run 4 Python tasks simultaneously. 
+# We pass the arguments: <chunk_number> <total_chunks>
+CUDA_VISIBLE_DEVICES=0 python run_sim.py 1 4 &
+CUDA_VISIBLE_DEVICES=1 python run_sim.py 2 4 &
+CUDA_VISIBLE_DEVICES=2 python run_sim.py 3 4 &
+CUDA_VISIBLE_DEVICES=3 python run_sim.py 4 4 &
+
+# Hold the script open until all 4 background processes are fully finished
+wait
+
+echo "All 4 chunks have successfully completed!"

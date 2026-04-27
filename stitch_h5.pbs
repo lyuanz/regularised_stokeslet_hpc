@@ -1,0 +1,22 @@
+#!/bin/bash
+#PBS -N stitch_sim_data
+#PBS -P 11004323
+#PBS -q normal
+# Requesting 1 CPU core and NO GPUs routes this directly to the fast q1 queue
+#PBS -l select=1:ncpus=1:mem=32gb
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#PBS -o stitch_log.txt
+
+cd $PBS_O_WORKDIR
+
+module load miniforge3
+# You don't need the cuda module since we aren't using GPUs here
+source activate dipole_env
+
+echo "Starting to stitch HDF5 files..."
+
+# Run the python script
+python stitch_h5.py
+
+echo "Stitching complete!"
