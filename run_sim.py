@@ -10,7 +10,6 @@ if __name__ == "__main__":
     print("Loading input data...")
     all_parameters = jnp.array(np.loadtxt('all_parameters.txt'))
     coeff_time = jnp.array(np.loadtxt('coeff_time.txt'))
-    window_map = jnp.array(np.loadtxt('TimeWindow.txt'))
     
     # 1. GENERATE THE SPATIAL GRID
     x_vals = np.linspace(-10, 10, 200)
@@ -42,9 +41,23 @@ if __name__ == "__main__":
     array_idx = int(array_idx_str) - 1 # Python is 0-indexed
     all_indices = np.arange(Nt)
     
-    # Split indices into 4 equal-ish chunks 
-    chunks = np.array_split(all_indices, total_jobs)
-    my_chunk = chunks[array_idx]
+    # ---------------------------------------------------------
+    # CUSTOM UNEQUAL CHUNKING FOR GPU LOAD BALANCING
+    # ---------------------------------------------------------
+    if total_jobs == 4:
+        # Hardcoded bounds to balance compute time 
+        # (Later timesteps require more integration history)
+        custom_chunks = [
+            all_indices[0:300],   # Chunk 1: indices 0 to 299
+            all_indices[300:450], # Chunk 2: indices 300 to 449
+            all_indices[450:526], # Chunk 3: indices 450 to 525
+            all_indices[526:]     # Chunk 4: indices 526 to the end
+        ]
+        my_chunk = custom_chunks[array_idx]
+    else:
+        # Fallback to equal splits if you ever change the number of GPUs
+        chunks = np.array_split(all_indices, total_jobs)
+        my_chunk = chunks[array_idx]
     
     start_idx = my_chunk[0]
     end_idx = my_chunk[-1] + 1
@@ -73,7 +86,6 @@ if __name__ == "__main__":
             all_parameters=all_parameters,
             current_t=current_t,
             coeff_time=coeff_time,
-            window_map=window_map,
             dt_int=2.5e-6
         )
 

@@ -7,7 +7,6 @@ if __name__ == "__main__":
     print("Loading input data...")
     all_parameters = jnp.array(np.loadtxt('all_parameters.txt'))
     coeff_time = jnp.array(np.loadtxt('coeff_time.txt'))
-    window_map = jnp.array(np.loadtxt('TimeWindow.txt'))
     
     # GENERATE THE SPATIAL GRID
     x_vals = np.linspace(-10, 10, 200)
@@ -18,13 +17,12 @@ if __name__ == "__main__":
     # 1. Choose the worst-case snapshot to test
     t_test = jnp.array(3)
     
-    print("Calculating Ground Truth (dt_int = 5e-5)...")
+    print("Calculating Ground Truth (dt_int = 5e-7)...")
     v_true = compute_flow_field_grid(
         target_grid=grid_points, 
         all_parameters=all_parameters, 
         current_t=t_test, 
-        coeff_time=coeff_time, 
-        window_map=window_map,
+        coeff_time=coeff_time,
         dt_int=5e-7,  # The absurdly small ground truth
         dt=5e-3
     ).block_until_ready()
@@ -40,8 +38,7 @@ if __name__ == "__main__":
             target_grid=grid_points, 
             all_parameters=all_parameters, 
             current_t=t_test, 
-            coeff_time=coeff_time, 
-            window_map=window_map,
+            coeff_time=coeff_time,
             dt_int=dt,
             dt=5e-3
         ).block_until_ready()

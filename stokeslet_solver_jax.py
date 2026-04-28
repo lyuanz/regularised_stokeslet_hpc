@@ -72,57 +72,20 @@ def calc_stokeslet_tensor(r_vec,
     return jnp.where(is_close, tensor_limit, tensor_standard)
     
 # ---------------------------------------------------------
-# 2. TIME WINDOW LOGIC (JAX Version)
-# ---------------------------------------------------------
-@jax.jit
-def get_time_window(r, 
-                    window_map):
-    """
-    Looks up the time window for a given distance r.
-
-    Parameters
-    ----------
-    r -> float : distance between position of interest and the source
-    window_map -> jnp.ndarray : An array recording the range of r values and the time window of each range, i.e. [[r_min, r_max, time_window], [...]]
-
-    Returns
-    -------
-    time_window -> float : The time window
-    """
-    # 1. Create a boolean array checking the condition for every row simultaneously
-    # is_in_range will look like [False, False, True, False, ...]
-    is_in_range = (window_map[:, 0] <= r) & (r < window_map[:, 1])
-    
-    # 2. Check if ANY row actually matched
-    has_match = jnp.any(is_in_range)
-    
-    # 3. Find the index of the True value. 
-    # (If all are False, argmax returns 0, which we catch in the next step)
-    match_idx = jnp.argmax(is_in_range)
-    
-    # 4. JAX Conditional: If we found a match, use match_idx. 
-    # Otherwise, use the last index (shape[0] - 1) as the fallback.
-    last_idx = window_map.shape[0] - 1
-    final_idx = jnp.where(has_match, match_idx, last_idx)
-    
-    # 5. Extract and return the time_window value
-    return window_map[final_idx, 2]
-    
-# ---------------------------------------------------------
-# 3. CONVOLUTION INTEGRATION (JAX Version - Uniform Grid)
+# 3. CONVOLUTION INTEGRATION (Fixed Global Bounds)
 # ---------------------------------------------------------
 @jax.jit
 def compute_flow_velocity(target_pos, 
                           regStokes_pos, 
                           current_t, 
                           base_force, 
-                          multiplier_array,  
-                          window_map, 
+                          multiplier_array,
                           epsilon, 
                           dt_int,    # The step size for the numerical integration
                           dt_force=5e-3,  # The spacing of your coefficient data
                           nu=168.0, 
                           rho=1.0/168.0):
+    
     """
     Computes the flow velocity vector u at target_pos due to a regularised Stokeslet.
     Performs uniform trapezoidal numerical integration, smoothly interpolating force data.
@@ -134,7 +97,6 @@ def compute_flow_velocity(target_pos,
     current_t -> float : current timepoint
     base_force -> jnp.ndarray : base force of the regularised Stokeslet
     multiplier_array -> jnp.ndarray : 1D array of scalar multipliers for base_force over one flagellar beat period
-    window_map -> float : time window beyond which the convolution integral will be truncated
     epsilon -> float : radius of the regularised Stokeslet
     dt_int -> float : timestep used for numerical integration
     dt_force -> float : timestep of the coefficient data
@@ -145,22 +107,24 @@ def compute_flow_velocity(target_pos,
     -------
     jnp.ndarray : Fluid flow velocity at the position of interest
     """
+                          
     r_vec = target_pos - regStokes_pos
-    r = jnp.linalg.norm(r_vec)
     
-    window = get_time_window(r, window_map)
-    t_start = jnp.maximum(0.0, current_t - window)
+    # ---------------------------------------------------------
+    # THE FIX: GLOBAL INTEGRATION BOUNDS
+    # ---------------------------------------------------------
+    # Instead of varying the start time by distance, we use a fixed 
+    # maximum history lookback (5.0s) for the entire grid.
+    # This guarantees ZERO spatial jumps in the integration loop.
+    global_window = 4.41
+    t_start = jnp.maximum(0.0, current_t - global_window)
     
-    # Calculate loop bounds based on the INTEGRATION step size
     idx_start = jnp.round(t_start / dt_int).astype(jnp.int32)
     idx_end = jnp.round(current_t / dt_int).astype(jnp.int32)
         
     N_period = multiplier_array.shape[0]
     T_period = N_period * dt_force
     
-    # ---------------------------------------------------------
-    # UNIFIED FORCE INTERPOLATOR
-    # ---------------------------------------------------------
     def get_force(tau):
         """Linearly interpolates force at any time tau using the base dt_force"""
         idx_float = (tau % T_period) / dt_force
@@ -169,14 +133,10 @@ def compute_flow_velocity(target_pos,
         w = idx_float - idx_low
         return base_force * (multiplier_array[idx_low] * (1.0 - w) + multiplier_array[idx_high] * w)
 
-    # Initialize our integral state
     initial_integral = jnp.zeros(2, dtype=jnp.float32)
 
-    # ---------------------------------------------------------
-    # STANDARD BULK INTEGRATION (JAX fori_loop)
-    # ---------------------------------------------------------
     def bulk_body_fn(i, integral_sum):
-        """Executes one step of standard trapezoidal integration using dt_int"""
+        """Executes one step of standard trapezoidal integration"""
         tau1 = i * dt_int
         tau2 = (i + 1) * dt_int
         
@@ -191,7 +151,7 @@ def compute_flow_velocity(target_pos,
         
         return integral_sum + 0.5 * (integrand1 + integrand2) * dt_int
 
-    # Run the uniform loop
+    # All grid points now execute the exact same number of loop iterations
     final_integral = jax.lax.fori_loop(idx_start, idx_end, bulk_body_fn, initial_integral)
 
     prefactor = 1.0 / (4.0 * jnp.pi * rho)
@@ -205,8 +165,7 @@ def compute_total_velocity(target_pos,
                            all_parameters, 
                            current_t,  
                            coeff_time,
-                           window_map,
-                           dt_int, 
+                           dt_int,
                            dt=5e-3,
                            nu=168.0, 
                            rho=1.0/168.0):
@@ -220,7 +179,6 @@ def compute_total_velocity(target_pos,
     all_parameters -> jnp.ndarray : a 2D array recording the origin, radius, force, and PCA mode of each regularised Stokeslet
     current_t -> float : current timepoint
     coeff_time -> jnp.ndarray : Scalar multipliers for force over one flagellar beat period
-    window_map -> jnp.ndarray : time window beyond which the convolution integral will be truncated
     dt_int -> float : timestep used for numerical integration
     dt -> float : timestep
     nu -> float : kinematic viscosity
@@ -256,7 +214,6 @@ def compute_total_velocity(target_pos,
             None,  # current_t: same for all
             0,     # base_force: unique per stokeslet
             0,     # multiplier_array: unique per stokeslet
-            None,  # window_map: same for all
             0,     # epsilon: unique per stokeslet
             None,  # dt_int: same
             None,  # dt: same
@@ -273,10 +230,9 @@ def compute_total_velocity(target_pos,
         stokeslet_positions, 
         current_t, 
         base_forces, 
-        multiplier_arrays, 
-        window_map, 
-        epsilons,
-        dt_int, 
+        multiplier_arrays,
+        epsilons, 
+        dt_int,
         dt, 
         nu, 
         rho
@@ -295,8 +251,7 @@ def compute_flow_field_grid(target_grid,
                             all_parameters, 
                             current_t, 
                             coeff_time, 
-                            window_map,
-                            dt_int, 
+                            dt_int,
                             dt=5e-3,
                             nu=168.0, 
                             rho=1.0/168.0):
@@ -310,7 +265,6 @@ def compute_flow_field_grid(target_grid,
     all_parameters -> jnp.ndarray : a 2D array recording the origin, radius, force, and PCA mode of each regularised Stokeslet
     current_t -> float : current timepoint
     coeff_time -> jnp.ndarray : Scalar multipliers for force over one flagellar beat period
-    window_map -> jnp.ndarray : time window beyond which the convolution integral will be truncated
     dt_int -> float : timestep used for numerical integration
     dt -> float : timestep
     nu -> int : kinematic viscosity
@@ -329,7 +283,7 @@ def compute_flow_field_grid(target_grid,
     # We slice target_pos (axis 0), everything else gets None (broadcast)
     vmap_y = jax.vmap(
         compute_total_velocity,
-        in_axes=(0, None, None, None, None, None, None, None, None)
+        in_axes=(0, None, None, None, None, None, None, None)
     )
     
     # 2. Map over the X-axis (Outer loop replacement)
@@ -337,7 +291,7 @@ def compute_flow_field_grid(target_grid,
     # It now expects target_grid of shape (Nx, Ny, 2)
     vmap_x_y = jax.vmap(
         vmap_y,
-        in_axes=(0, None, None, None, None, None, None, None, None)
+        in_axes=(0, None, None, None, None, None, None, None)
     )
     
     # ---------------------------------------------------------
@@ -350,7 +304,6 @@ def compute_flow_field_grid(target_grid,
         all_parameters,
         current_t,
         coeff_time,
-        window_map,
         dt_int,
         dt,
         nu,
@@ -367,7 +320,6 @@ def compute_flow_field_over_time(target_grid,
                                  all_parameters, 
                                  time_array, 
                                  coeff_time, 
-                                 window_map,
                                  dt_int,
                                  dt=5e-3,
                                  nu=168.0, 
@@ -382,7 +334,6 @@ def compute_flow_field_over_time(target_grid,
     all_parameters -> jnp.ndarray : a 2D array recording the origin, radius, force, and PCA mode of each regularised Stokeslet
     time_array -> jnp.ndarray : all the timepoints where the flow field is evaluated
     coeff_time -> jnp.ndarray : Scalar multipliers for force over one flagellar beat period
-    window_map -> jnp.ndarray : time window beyond which the convolution integral will be truncated
     dt_int -> float : timestep used for numerical integration
     dt -> float : timestep
     nu -> int : kinematic viscosity
@@ -403,7 +354,7 @@ def compute_flow_field_over_time(target_grid,
     # The function now accepts a 2D array of shape (Ny, 2) instead of a single (2,) point.
     vmap_y = jax.vmap(
         compute_total_velocity, 
-        in_axes=(0, None, None, None, None, None, None, None, None)
+        in_axes=(0, None, None, None, None, None, None, None)
     )
     
     # 2. Map over the X-axis of the grid
@@ -411,7 +362,7 @@ def compute_flow_field_over_time(target_grid,
     # The function now accepts a 3D array of shape (Nx, Ny, 2).
     vmap_x_y = jax.vmap(
         vmap_y, 
-        in_axes=(0, None, None, None, None, None, None, None, None)
+        in_axes=(0, None, None, None, None, None, None, None)
     )
     
     # 3. Map over Time
@@ -420,7 +371,7 @@ def compute_flow_field_over_time(target_grid,
     # The function now evaluates the whole spatial grid across the time array of shape (Nt,).
     vmap_t_x_y = jax.vmap(
         vmap_x_y,
-        in_axes=(None, None, 0, None, None, None, None, None, None)
+        in_axes=(None, None, 0, None, None, None, None, None)
     )
     
     # ---------------------------------------------------------
@@ -433,8 +384,7 @@ def compute_flow_field_over_time(target_grid,
         all_parameters, 
         time_array, 
         coeff_time, 
-        window_map, 
-        dt_int, 
+        dt_int,
         dt, 
         nu, 
         rho
