@@ -12,8 +12,8 @@ if __name__ == "__main__":
     coeff_time = jnp.array(np.loadtxt('coeff_time.txt'))
     
     # 1. GENERATE THE SPATIAL GRID
-    x_vals = np.linspace(-10, 10, 200)
-    y_vals = np.linspace(-10, 10, 200)
+    x_vals = np.linspace(-10, 10, 201)
+    y_vals = np.linspace(-10, 10, 201)
     X, Y = np.meshgrid(x_vals, y_vals, indexing='ij')
     grid_points = jnp.array(np.stack((X, Y), axis=-1))
     
@@ -70,7 +70,7 @@ if __name__ == "__main__":
     print("-" * 40)
     
     # Pre-allocate ONLY for this chunk's steps
-    velocity_4D_array_cpu = np.zeros((Nt_chunk, 200, 200, 2))
+    velocity_4D_array_cpu = np.zeros((Nt_chunk, 201, 201, 2))
     
     # ---------------------------------------------------------
     # 3. BATCHED GPU COMPUTATION

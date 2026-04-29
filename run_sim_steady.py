@@ -8,8 +8,8 @@ if __name__ == "__main__":
     coeff_time = np.loadtxt('coeff_time.txt')
     
     # 1. GENERATE THE SPATIAL GRID (as before)
-    x_vals = np.linspace(-10, 10, 200)
-    y_vals = np.linspace(-10, 10, 200)
+    x_vals = np.linspace(-10, 10, 201)
+    y_vals = np.linspace(-10, 10, 201)
     X, Y = np.meshgrid(x_vals, y_vals, indexing='ij')
     grid_points = np.stack((X, Y), axis=-1)
     
